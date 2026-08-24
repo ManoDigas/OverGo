@@ -3,28 +3,25 @@ package com.manodigas.overgo;
 import android.content.Context;
 import android.content.SharedPreferences;
 
+import com.google.mlkit.vision.text.Text;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
 import java.util.List;
-import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 class PokemonRecord {
     final String name;
     final int cp;
-    final String rawText;
-    final long scannedAt;
+    final int iv;
 
-    PokemonRecord(String name, int cp, String rawText, long scannedAt) {
+    PokemonRecord(String name, int cp, int iv) {
         this.name = name;
         this.cp = cp;
-        this.rawText = rawText;
-        this.scannedAt = scannedAt;
+        this.iv = iv;
     }
 }
 
@@ -33,13 +30,17 @@ class CollectionStore {
     private static final String KEY_ITEMS = "items";
     private static final int MAX_ITEMS = 500;
 
-    static synchronized void add(Context context, PokemonRecord record) {
+    static synchronized boolean add(Context context, PokemonRecord record) {
         List<PokemonRecord> items = list(context);
-        items.add(0, record);
-        if (items.size() > MAX_ITEMS) {
-            items = new ArrayList<>(items.subList(0, MAX_ITEMS));
+        for (PokemonRecord item : items) {
+            if (item.name.equalsIgnoreCase(record.name) && item.cp == record.cp && item.iv == record.iv) {
+                return false;
+            }
         }
+        items.add(0, record);
+        if (items.size() > MAX_ITEMS) items = new ArrayList<>(items.subList(0, MAX_ITEMS));
         save(context, items);
+        return true;
     }
 
     static synchronized List<PokemonRecord> list(Context context) {
@@ -51,12 +52,12 @@ class CollectionStore {
             for (int i = 0; i < array.length(); i++) {
                 JSONObject obj = array.optJSONObject(i);
                 if (obj == null) continue;
-                result.add(new PokemonRecord(
-                        obj.optString("name", "Pokémon"),
-                        obj.optInt("cp", -1),
-                        obj.optString("rawText", ""),
-                        obj.optLong("scannedAt", 0L)
-                ));
+                String name = obj.optString("name", "").trim();
+                int cp = obj.optInt("cp", -1);
+                int iv = obj.optInt("iv", -1);
+                if (!name.isEmpty() && cp >= 10 && iv >= 0 && iv <= 100) {
+                    result.add(new PokemonRecord(name, cp, iv));
+                }
             }
         } catch (Exception ignored) {
         }
@@ -65,9 +66,7 @@ class CollectionStore {
 
     static synchronized void clear(Context context) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit()
-                .putString(KEY_ITEMS, "[]")
-                .apply();
+                .edit().putString(KEY_ITEMS, "[]").apply();
     }
 
     private static void save(Context context, List<PokemonRecord> items) {
@@ -77,94 +76,80 @@ class CollectionStore {
                 JSONObject obj = new JSONObject();
                 obj.put("name", item.name);
                 obj.put("cp", item.cp);
-                obj.put("rawText", item.rawText);
-                obj.put("scannedAt", item.scannedAt);
+                obj.put("iv", item.iv);
                 array.put(obj);
             } catch (Exception ignored) {
             }
         }
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit()
-                .putString(KEY_ITEMS, array.toString())
-                .apply();
+                .edit().putString(KEY_ITEMS, array.toString()).apply();
     }
 }
 
 class ScreenPokemonParser {
-    private static final Pattern CP_PATTERN = Pattern.compile("(?i)\\b(?:CP|PC)\\s*([0-9]{1,5})\\b");
+    private static final Pattern CP_PATTERN = Pattern.compile("(?i)(?:^|\\s)(?:CP|PC)\\s*([0-9]{1,5})(?:\\s|$)");
 
-    static PokemonRecord parse(String rawText) {
-        String safe = rawText == null ? "" : rawText.trim();
-        int cp = -1;
-        Matcher cpMatcher = CP_PATTERN.matcher(safe);
-        if (cpMatcher.find()) {
-            try {
-                cp = Integer.parseInt(cpMatcher.group(1));
-            } catch (Exception ignored) {
+    static ParseResult parse(Context context, Text recognizedText, int screenHeight, IvResult ivResult) {
+        if (recognizedText == null) return ParseResult.error("Não consegui ler o texto da tela.");
+        String raw = recognizedText.getText() == null ? "" : recognizedText.getText();
+
+        int cp = extractCp(raw);
+        if (cp < 10) {
+            return ParseResult.error("CP não encontrado. Deixe o CP visível e tente de novo.");
+        }
+
+        String name = PokemonSpeciesIndex.resolve(context, recognizedText, screenHeight);
+        if (name == null) {
+            if (PokemonSpeciesIndex.getNames(context).isEmpty()) {
+                return ParseResult.error("A Pokédex ainda está carregando. Volte ao OverGo, aguarde alguns segundos e tente novamente.");
             }
+            return ParseResult.error("Pokémon não identificado com confiança. Não salvei uma ficha errada.");
         }
 
-        String name = guessName(safe);
-        String clipped = safe.length() > 1200 ? safe.substring(0, 1200) : safe;
-        return new PokemonRecord(name, cp, clipped, System.currentTimeMillis());
-    }
-
-    static String summary(PokemonRecord record) {
-        StringBuilder text = new StringBuilder();
-        text.append("Detectado: ").append(record.name);
-        if (record.cp >= 0) text.append(" • PC/CP ").append(record.cp);
-        if (record.rawText.isEmpty()) text.append("\nNenhum texto reconhecido na tela.");
-        else text.append("\nSalvo na coleção local.");
-        return text.toString();
-    }
-
-    private static String guessName(String raw) {
-        String[] lines = raw.split("\\r?\\n");
-        for (String value : lines) {
-            String line = value.trim();
-            if (line.length() < 2 || line.length() > 28) continue;
-            String upper = line.toUpperCase(Locale.ROOT);
-            if (upper.matches(".*\\d.*")) continue;
-            if (upper.startsWith("CP") || upper.startsWith("PC")) continue;
-            if (upper.contains("POKÉMON") || upper.contains("POKEMON")) continue;
-            if (upper.contains("ATAQUE") || upper.contains("DEFESA") || upper.contains("ATTACK") || upper.contains("DEFENSE")) continue;
-            if (upper.contains("FORTALECER") || upper.contains("POWER UP") || upper.contains("EVOLUIR") || upper.contains("EVOLVE")) continue;
-            if (upper.contains("PESO") || upper.contains("ALTURA") || upper.contains("WEIGHT") || upper.contains("HEIGHT")) continue;
-            if (upper.contains("DOCE") || upper.contains("CANDY") || upper.contains("POEIRA") || upper.contains("STARDUST")) continue;
-            return line;
+        if (ivResult == null) {
+            return ParseResult.error("IV não detectado. Abra Avaliar/Appraise para mostrar as 3 barras e faça o scan novamente.");
         }
-        return "Pokémon não identificado";
+
+        return ParseResult.success(new PokemonRecord(name, cp, ivResult.percent), ivResult);
+    }
+
+    private static int extractCp(String raw) {
+        Matcher matcher = CP_PATTERN.matcher(" " + raw.replace('\n', ' ') + " ");
+        if (!matcher.find()) return -1;
+        try {
+            return Integer.parseInt(matcher.group(1));
+        } catch (Exception ignored) {
+            return -1;
+        }
     }
 }
 
-class LocalPokemonAssistant {
-    static String answer(Context context, String question) {
-        List<PokemonRecord> items = CollectionStore.list(context);
-        String q = question == null ? "" : question.toLowerCase(Locale.ROOT).trim();
+class ParseResult {
+    final PokemonRecord record;
+    final IvResult ivResult;
+    final String error;
 
-        if (q.isEmpty()) {
-            return "Pergunte algo sobre a coleção, por exemplo: ‘qual tem o maior CP?’";
-        }
+    private ParseResult(PokemonRecord record, IvResult ivResult, String error) {
+        this.record = record;
+        this.ivResult = ivResult;
+        this.error = error;
+    }
 
-        if (items.isEmpty()) {
-            return "Sua coleção local ainda está vazia. Inicie o scanner e registre alguns Pokémon primeiro.";
-        }
+    static ParseResult success(PokemonRecord record, IvResult ivResult) {
+        return new ParseResult(record, ivResult, null);
+    }
 
-        if (q.contains("quantos") || q.contains("quantidade")) {
-            return "Tenho " + items.size() + " registros na sua coleção local.";
-        }
+    static ParseResult error(String error) {
+        return new ParseResult(null, null, error);
+    }
 
-        if (q.contains("maior cp") || q.contains("maior pc") || q.contains("mais forte")) {
-            PokemonRecord best = Collections.max(items, Comparator.comparingInt(item -> item.cp));
-            if (best.cp < 0) return "Ainda não consegui ler CP/PC dos Pokémon registrados.";
-            return "O maior CP/PC que encontrei é " + best.name + " com " + best.cp + ".";
-        }
+    boolean isSuccess() {
+        return record != null;
+    }
 
-        if (q.contains("último") || q.contains("ultimo") || q.contains("recente")) {
-            PokemonRecord latest = items.get(0);
-            return "O registro mais recente é " + latest.name + (latest.cp >= 0 ? " com CP/PC " + latest.cp : "") + ".";
-        }
-
-        return "Já consigo usar sua coleção como contexto. Neste MVP eu respondo sobre quantidade, maior CP/PC e registros recentes; a próxima etapa é conectar o modelo de IA Pokémon completo.";
+    String summary(boolean inserted) {
+        if (!isSuccess()) return error;
+        return record.name + "\nCP " + record.cp + " • IV " + record.iv + "%"
+                + (inserted ? "\nFicha salva." : "\nEssa ficha já estava salva.");
     }
 }
