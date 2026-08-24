@@ -41,9 +41,11 @@ jobs:
 
       - name: Build debug APK
         shell: bash
+        env:
+          OVERGO_AI_URL: ${{ vars.OVERGO_AI_URL }}
         run: |
           set -o pipefail
-          gradle :app:assembleDebug --stacktrace 2>&1 | tee overgo-build.log
+          gradle :app:assembleDebug -POVERGO_AI_URL="$OVERGO_AI_URL" --stacktrace 2>&1 | tee overgo-build.log
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
