@@ -2,6 +2,8 @@ plugins {
     id("com.android.application")
 }
 
+val overgoAiUrl = providers.gradleProperty("OVERGO_AI_URL").orElse("").get()
+
 android {
     namespace = "com.manodigas.overgo"
     compileSdk = 36
@@ -10,8 +12,13 @@ android {
         applicationId = "com.manodigas.overgo"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0-dev"
+        buildConfigField("String", "OVERGO_AI_URL", "\"$overgoAiUrl\"")
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     buildTypes {
