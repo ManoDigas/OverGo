@@ -1,0 +1,78 @@
+name: Build OverGo AI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'feature/**'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 36
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Set up Gradle 9.5
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+
+      - name: Build debug APK
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle :app:assembleDebug --stacktrace 2>&1 | tee overgo-build.log
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: OverGo-AI-Android
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Publish failure diagnostics
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "## OverGo AI Android build failure"
+            echo
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "Commit: $GITHUB_SHA"
+            echo
+            echo '```text'
+            if [ -f overgo-build.log ]; then
+              grep -E "(^e:|error:|FAILURE:|What went wrong|Execution failed|Caused by:)" overgo-build.log | tail -n 80 || true
+              echo
+              echo "--- tail ---"
+              tail -n 140 overgo-build.log
+            else
+              echo "Build log was not created; failure happened before Gradle build."
+            fi
+            echo '```'
+          } > overgo-failure.md
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "[CI] OverGo AI build failure #$GITHUB_RUN_NUMBER" --body-file overgo-failure.md
