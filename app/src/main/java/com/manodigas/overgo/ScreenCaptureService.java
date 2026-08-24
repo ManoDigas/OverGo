@@ -34,6 +34,7 @@ import android.widget.TextView;
 import androidx.annotation.Nullable;
 
 import com.google.mlkit.vision.common.InputImage;
+import com.google.mlkit.vision.text.Text;
 import com.google.mlkit.vision.text.TextRecognition;
 import com.google.mlkit.vision.text.TextRecognizer;
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
@@ -291,31 +292,77 @@ public class ScreenCaptureService extends Service {
         }
 
         analyzing = true;
-        if (resultView != null) resultView.setText("Lendo Pokémon, CP e IV...");
-        IvResult ivResult = IvAnalyzer.analyze(frame);
-        InputImage input = InputImage.fromBitmap(frame, 0);
+        if (resultView != null) resultView.setText("Lendo nome, ampliando CP e medindo IV...");
 
-        recognizer.process(input)
-                .addOnSuccessListener(text -> {
-                    ParseResult parsed = ScreenPokemonParser.parse(
-                            getApplicationContext(),
-                            text,
-                            frame.getHeight(),
-                            ivResult
-                    );
-                    boolean inserted = false;
-                    if (parsed.isSuccess()) {
-                        inserted = CollectionStore.add(getApplicationContext(), parsed.record);
-                    }
-                    if (resultView != null) resultView.setText(parsed.summary(inserted));
-                })
+        IvResult ivResult = IvAnalyzer.analyze(frame);
+        InputImage fullInput = InputImage.fromBitmap(frame, 0);
+
+        recognizer.process(fullInput)
+                .addOnSuccessListener(fullText -> runFocusedCpPass(frame, fullText, ivResult))
                 .addOnFailureListener(error -> {
                     if (resultView != null) resultView.setText("Não consegui ler esta tela. Tente novamente com a ficha aberta.");
-                })
-                .addOnCompleteListener(task -> {
-                    analyzing = false;
-                    if (!frame.isRecycled()) frame.recycle();
+                    completeFrame(frame);
                 });
+    }
+
+    private void runFocusedCpPass(Bitmap frame, Text fullText, IvResult ivResult) {
+        Bitmap cpCrop = createCpCrop(frame);
+        if (cpCrop == null) {
+            finishParsedFrame(frame, fullText, ivResult, -1);
+            return;
+        }
+
+        InputImage cpInput = InputImage.fromBitmap(cpCrop, 0);
+        recognizer.process(cpInput)
+                .addOnSuccessListener(cpText -> {
+                    int focusedCp = CpReader.extract(cpText);
+                    finishParsedFrame(frame, fullText, ivResult, focusedCp);
+                })
+                .addOnFailureListener(error -> finishParsedFrame(frame, fullText, ivResult, -1))
+                .addOnCompleteListener(task -> {
+                    if (!cpCrop.isRecycled()) cpCrop.recycle();
+                });
+    }
+
+    private void finishParsedFrame(Bitmap frame, Text fullText, IvResult ivResult, int focusedCp) {
+        ParseResult parsed = ScreenPokemonParser.parse(
+                getApplicationContext(),
+                fullText,
+                frame.getHeight(),
+                ivResult,
+                focusedCp
+        );
+        boolean inserted = false;
+        if (parsed.isSuccess()) {
+            inserted = CollectionStore.add(getApplicationContext(), parsed.record);
+        }
+        if (resultView != null) resultView.setText(parsed.summary(inserted));
+        completeFrame(frame);
+    }
+
+    private Bitmap createCpCrop(Bitmap frame) {
+        try {
+            int x = Math.max(0, (int) (frame.getWidth() * 0.08f));
+            int y = Math.max(0, (int) (frame.getHeight() * 0.025f));
+            int right = Math.min(frame.getWidth(), (int) (frame.getWidth() * 0.92f));
+            int bottom = Math.min(frame.getHeight(), (int) (frame.getHeight() * 0.33f));
+            int width = Math.max(1, right - x);
+            int height = Math.max(1, bottom - y);
+
+            Bitmap raw = Bitmap.createBitmap(frame, x, y, width, height);
+            int targetWidth = Math.min(1800, Math.max(width, width * 2));
+            int targetHeight = Math.max(1, Math.round(height * (targetWidth / (float) width)));
+            Bitmap scaled = Bitmap.createScaledBitmap(raw, targetWidth, targetHeight, true);
+            if (scaled != raw && !raw.isRecycled()) raw.recycle();
+            return scaled;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private void completeFrame(Bitmap frame) {
+        analyzing = false;
+        if (frame != null && !frame.isRecycled()) frame.recycle();
     }
 
     private Bitmap imageToBitmap(Image image) {
