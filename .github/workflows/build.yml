@@ -2,9 +2,9 @@ name: Build OverGo AI
 
 on:
   workflow_dispatch:
-  push:
+  pull_request:
     branches:
-      - 'feature/**'
+      - main
 
 permissions:
   contents: read
