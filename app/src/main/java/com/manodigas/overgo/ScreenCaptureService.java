@@ -64,6 +64,7 @@ public class ScreenCaptureService extends Service {
 
     private LinearLayout overlayView;
     private TextView resultView;
+    private boolean analyzing;
 
     @Override
     public void onCreate() {
@@ -73,6 +74,7 @@ public class ScreenCaptureService extends Service {
         captureHandler = new Handler(captureThread.getLooper());
         windowManager = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
         recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
+        PokemonSpeciesIndex.preload(getApplicationContext(), null);
     }
 
     @Nullable
@@ -83,9 +85,7 @@ public class ScreenCaptureService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null && ACTION_START.equals(intent.getAction())) {
-            startProjection(intent);
-        }
+        if (intent != null && ACTION_START.equals(intent.getAction())) startProjection(intent);
         return START_NOT_STICKY;
     }
 
@@ -173,17 +173,13 @@ public class ScreenCaptureService extends Service {
     private void startProjectionForeground() {
         Notification notification = new Notification.Builder(this, CHANNEL_ID)
                 .setContentTitle("OverGo ativo")
-                .setContentText("Toque na bolha SCAN para registrar o Pokémon visível.")
+                .setContentText("Abra Avaliar e toque em SCAN para salvar Pokémon + CP + IV.")
                 .setSmallIcon(android.R.drawable.ic_menu_camera)
                 .setOngoing(true)
                 .build();
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                    NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-            );
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
         } else {
             startForeground(NOTIFICATION_ID, notification);
         }
@@ -214,12 +210,12 @@ public class ScreenCaptureService extends Service {
         scanButton.setBackgroundColor(Color.rgb(34, 108, 190));
 
         resultView = new TextView(this);
-        resultView.setText("Abra a ficha de um Pokémon e toque em SCAN.");
+        resultView.setText("Abra a tela Avaliar/Appraise e toque em SCAN.");
         resultView.setTextSize(12f);
         resultView.setTextColor(Color.WHITE);
         resultView.setPadding(dp(10), dp(8), dp(10), dp(8));
         resultView.setBackgroundColor(Color.argb(225, 20, 20, 20));
-        resultView.setMaxWidth(dp(280));
+        resultView.setMaxWidth(dp(290));
 
         LinearLayout container = new LinearLayout(this);
         container.setOrientation(LinearLayout.VERTICAL);
@@ -238,7 +234,7 @@ public class ScreenCaptureService extends Service {
         );
         params.gravity = Gravity.TOP | Gravity.START;
         params.x = dp(12);
-        params.y = dp(170);
+        params.y = dp(145);
 
         final int[] startX = {0};
         final int[] startY = {0};
@@ -255,7 +251,6 @@ public class ScreenCaptureService extends Service {
                     touchY[0] = event.getRawY();
                     moved[0] = false;
                     return true;
-
                 case MotionEvent.ACTION_MOVE:
                     int dx = (int) (event.getRawX() - touchX[0]);
                     int dy = (int) (event.getRawY() - touchY[0]);
@@ -267,11 +262,9 @@ public class ScreenCaptureService extends Service {
                     } catch (Exception ignored) {
                     }
                     return true;
-
                 case MotionEvent.ACTION_UP:
                     if (!moved[0]) analyzeLatestFrame();
                     return true;
-
                 default:
                     return false;
             }
@@ -285,32 +278,42 @@ public class ScreenCaptureService extends Service {
     }
 
     private void analyzeLatestFrame() {
+        if (analyzing) return;
         Bitmap frame;
         synchronized (bitmapLock) {
             frame = latestBitmap == null || latestBitmap.isRecycled()
                     ? null
                     : latestBitmap.copy(Bitmap.Config.ARGB_8888, false);
         }
-
         if (frame == null) {
             if (resultView != null) resultView.setText("Ainda não recebi a imagem. Tente novamente.");
             return;
         }
 
-        if (resultView != null) resultView.setText("Analisando...");
+        analyzing = true;
+        if (resultView != null) resultView.setText("Lendo Pokémon, CP e IV...");
+        IvResult ivResult = IvAnalyzer.analyze(frame);
         InputImage input = InputImage.fromBitmap(frame, 0);
+
         recognizer.process(input)
                 .addOnSuccessListener(text -> {
-                    PokemonRecord record = ScreenPokemonParser.parse(text.getText());
-                    CollectionStore.add(getApplicationContext(), record);
-                    if (resultView != null) resultView.setText(ScreenPokemonParser.summary(record));
+                    ParseResult parsed = ScreenPokemonParser.parse(
+                            getApplicationContext(),
+                            text,
+                            frame.getHeight(),
+                            ivResult
+                    );
+                    boolean inserted = false;
+                    if (parsed.isSuccess()) {
+                        inserted = CollectionStore.add(getApplicationContext(), parsed.record);
+                    }
+                    if (resultView != null) resultView.setText(parsed.summary(inserted));
                 })
                 .addOnFailureListener(error -> {
-                    if (resultView != null) {
-                        resultView.setText("Não consegui ler esta tela: " + error.getClass().getSimpleName());
-                    }
+                    if (resultView != null) resultView.setText("Não consegui ler esta tela. Tente novamente com a ficha aberta.");
                 })
                 .addOnCompleteListener(task -> {
+                    analyzing = false;
                     if (!frame.isRecycled()) frame.recycle();
                 });
     }
@@ -334,45 +337,30 @@ public class ScreenCaptureService extends Service {
     @Override
     public void onDestroy() {
         if (overlayView != null) {
-            try {
-                windowManager.removeView(overlayView);
-            } catch (Exception ignored) {
-            }
+            try { windowManager.removeView(overlayView); } catch (Exception ignored) {}
             overlayView = null;
             resultView = null;
         }
-
         if (virtualDisplay != null) {
             virtualDisplay.release();
             virtualDisplay = null;
         }
-
         if (imageReader != null) {
             imageReader.close();
             imageReader = null;
         }
-
         if (mediaProjection != null && projectionCallback != null) {
-            try {
-                mediaProjection.unregisterCallback(projectionCallback);
-            } catch (Exception ignored) {
-            }
+            try { mediaProjection.unregisterCallback(projectionCallback); } catch (Exception ignored) {}
         }
         projectionCallback = null;
-
         if (mediaProjection != null) {
-            try {
-                mediaProjection.stop();
-            } catch (Exception ignored) {
-            }
+            try { mediaProjection.stop(); } catch (Exception ignored) {}
             mediaProjection = null;
         }
-
         synchronized (bitmapLock) {
             if (latestBitmap != null && !latestBitmap.isRecycled()) latestBitmap.recycle();
             latestBitmap = null;
         }
-
         if (recognizer != null) recognizer.close();
         if (captureThread != null) captureThread.quitSafely();
         stopForeground(STOP_FOREGROUND_REMOVE);
