@@ -28,6 +28,7 @@ public class MainActivity extends Activity {
 
     private TextView statusView;
     private TextView pokedexStatusView;
+    private TextView aiStatusView;
     private LinearLayout collectionContainer;
     private EditText questionInput;
     private TextView answerView;
@@ -40,6 +41,7 @@ public class MainActivity extends Activity {
         requestNotificationPermissionIfNeeded();
         refreshCollection();
         preloadPokedex();
+        refreshAiStatus();
     }
 
     @Override
@@ -49,6 +51,7 @@ public class MainActivity extends Activity {
             statusView.setText("Sobreposição autorizada. Abra Avaliar no Pokémon GO e inicie o scanner.");
         }
         refreshCollection();
+        refreshAiStatus();
     }
 
     @Override
@@ -85,7 +88,7 @@ public class MainActivity extends Activity {
         root.addView(title, matchWrap());
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("Scanner de Pokémon GO + coleção local + assistente Pokémon.");
+        subtitle.setText("Scanner de Pokémon GO + fichas locais + IA Pokémon generativa.");
         subtitle.setTextSize(15f);
         subtitle.setGravity(Gravity.CENTER_HORIZONTAL);
         subtitle.setPadding(0, dp(4), 0, dp(14));
@@ -131,7 +134,7 @@ public class MainActivity extends Activity {
         root.addView(collectionTitle, matchWrap());
 
         TextView collectionHelp = new TextView(this);
-        collectionHelp.setText("Cada ficha salva contém somente Pokémon, CP e IV.");
+        collectionHelp.setText("Cada ficha contém somente Pokémon, CP e IV.");
         collectionHelp.setTextSize(13f);
         collectionHelp.setPadding(0, 0, 0, dp(8));
         root.addView(collectionHelp, matchWrap());
@@ -160,14 +163,19 @@ public class MainActivity extends Activity {
         assistantTitle.setPadding(0, dp(18), 0, dp(4));
         root.addView(assistantTitle, matchWrap());
 
+        aiStatusView = new TextView(this);
+        aiStatusView.setTextSize(13f);
+        aiStatusView.setPadding(0, 0, 0, dp(6));
+        root.addView(aiStatusView, matchWrap());
+
         TextView assistantHelp = new TextView(this);
-        assistantHelp.setText("Pergunte sobre sua coleção ou sobre Pokémon: tipos, fraquezas, stats, habilidades, movimentos e comparações.");
+        assistantHelp.setText("O modelo recebe sua pergunta, o histórico recente e as fichas salvas. Ele pode raciocinar sobre sua coleção e consultar informação atual quando necessário.");
         assistantHelp.setTextSize(13f);
         assistantHelp.setPadding(0, 0, 0, dp(6));
         root.addView(assistantHelp, matchWrap());
 
         questionInput = new EditText(this);
-        questionInput.setHint("Ex.: fraquezas do Garchomp? / qual meu maior IV?");
+        questionInput.setHint("Ex.: com os Pokémon que tenho, monte 3 opções de time para a Ultra Liga e explique as escolhas.");
         questionInput.setSingleLine(false);
         questionInput.setMinLines(2);
         root.addView(questionInput, matchWrap());
@@ -177,8 +185,16 @@ public class MainActivity extends Activity {
         askButton.setOnClickListener(v -> askAssistant());
         root.addView(askButton, matchWrap());
 
+        Button clearChatButton = new Button(this);
+        clearChatButton.setText("Limpar conversa da IA");
+        clearChatButton.setOnClickListener(v -> {
+            PokemonAssistant.clearHistory(this);
+            answerView.setText("Histórico da conversa apagado. Suas fichas continuam salvas.");
+        });
+        root.addView(clearChatButton, matchWrap());
+
         answerView = new TextView(this);
-        answerView.setText("A IA usa suas fichas locais como contexto e consulta dados Pokémon quando necessário.");
+        answerView.setText("A IA generativa usará suas fichas como contexto.");
         answerView.setTextSize(15f);
         answerView.setPadding(dp(12), dp(12), dp(12), dp(12));
         answerView.setBackground(roundedBackground(Color.rgb(242, 244, 247), dp(12), Color.rgb(220, 224, 230)));
@@ -203,11 +219,23 @@ public class MainActivity extends Activity {
         });
     }
 
+    private void refreshAiStatus() {
+        if (aiStatusView == null) return;
+        String url = PokemonAssistant.getBackendUrl(this);
+        if (url.isEmpty()) {
+            aiStatusView.setText("IA generativa: backend ainda não conectado nesta build de desenvolvimento.");
+            aiStatusView.setTextColor(Color.rgb(155, 80, 25));
+        } else {
+            aiStatusView.setText("IA generativa: servidor configurado.");
+            aiStatusView.setTextColor(Color.rgb(35, 120, 65));
+        }
+    }
+
     private void askAssistant() {
         String question = questionInput.getText().toString().trim();
         askButton.setEnabled(false);
         askButton.setText("Pensando...");
-        answerView.setText("Analisando sua pergunta...");
+        answerView.setText("Analisando sua pergunta e suas fichas...");
         PokemonAssistant.ask(this, question, answer -> runOnUiThread(() -> {
             answerView.setText(answer);
             askButton.setEnabled(true);
