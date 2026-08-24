@@ -10,8 +10,6 @@ import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 class PokemonRecord {
     final String name;
@@ -87,13 +85,16 @@ class CollectionStore {
 }
 
 class ScreenPokemonParser {
-    private static final Pattern CP_PATTERN = Pattern.compile("(?i)(?:^|\\s)(?:CP|PC)\\s*([0-9]{1,5})(?:\\s|$)");
-
-    static ParseResult parse(Context context, Text recognizedText, int screenHeight, IvResult ivResult) {
+    static ParseResult parse(
+            Context context,
+            Text recognizedText,
+            int screenHeight,
+            IvResult ivResult,
+            int focusedCp
+    ) {
         if (recognizedText == null) return ParseResult.error("Não consegui ler o texto da tela.");
-        String raw = recognizedText.getText() == null ? "" : recognizedText.getText();
 
-        int cp = extractCp(raw);
+        int cp = focusedCp >= 10 ? focusedCp : CpReader.extract(recognizedText);
         if (cp < 10) {
             return ParseResult.error("CP não encontrado. Deixe o CP visível e tente de novo.");
         }
@@ -101,7 +102,7 @@ class ScreenPokemonParser {
         String name = PokemonSpeciesIndex.resolve(context, recognizedText, screenHeight);
         if (name == null) {
             if (PokemonSpeciesIndex.getNames(context).isEmpty()) {
-                return ParseResult.error("A Pokédex ainda está carregando. Volte ao OverGo, aguarde alguns segundos e tente novamente.");
+                return ParseResult.error("A Pokédex ainda está carregando. Volte ao OverGo e aguarde a lista de espécies.");
             }
             return ParseResult.error("Pokémon não identificado com confiança. Não salvei uma ficha errada.");
         }
@@ -111,16 +112,6 @@ class ScreenPokemonParser {
         }
 
         return ParseResult.success(new PokemonRecord(name, cp, ivResult.percent), ivResult);
-    }
-
-    private static int extractCp(String raw) {
-        Matcher matcher = CP_PATTERN.matcher(" " + raw.replace('\n', ' ') + " ");
-        if (!matcher.find()) return -1;
-        try {
-            return Integer.parseInt(matcher.group(1));
-        } catch (Exception ignored) {
-            return -1;
-        }
     }
 }
 
